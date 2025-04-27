@@ -545,4 +545,5 @@ dependencies = [
  "clap",
  "grep",
  "ignore",
+ "termcolor",
 ]

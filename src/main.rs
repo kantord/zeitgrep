@@ -2,10 +2,12 @@ use std::path::Path;
 
 use clap::Parser;
 use grep::{
+    printer::{ColorSpecs, StandardBuilder},
     regex::RegexMatcher,
-    searcher::{SearcherBuilder, sinks::UTF8},
+    searcher::{SearcherBuilder},
 };
 use ignore::WalkBuilder;
+use termcolor::{ColorChoice, StandardStream};
 
 /// Search frecently edited code in a Git repository
 #[derive(Parser, Debug)]
@@ -19,8 +21,15 @@ struct Args {
 fn main() {
     let args = Args::parse();
 
-    let matcher = RegexMatcher::new(&args.pattern).expect("Invalid regular expressoin");
-    let mut searcher = SearcherBuilder::new().line_number(true).build();
+    let matcher = RegexMatcher::new(&args.pattern).expect("Invalid regular expression");
+    let mut searcher = SearcherBuilder::new()
+        .line_number(true)
+        .build();
+    let color_specs =
+        ColorSpecs::new(&["match:fg:red".parse().expect("Could not create color spec")]);
+    let mut printer = StandardBuilder::new()
+        .color_specs(color_specs)
+        .build(StandardStream::stdout(ColorChoice::Always));
 
     let root = Path::new(".");
 
@@ -31,10 +40,7 @@ fn main() {
             if let Err(err) = searcher.search_path(
                 &matcher,
                 path,
-                UTF8(|lnum, line| {
-                    print!("{}:{}: {}", path.display(), lnum, line);
-                    Ok(true)
-                }),
+                printer.sink_with_path(&matcher, path),
             ) {
                 eprintln!("Failed to search {}: {}", path.display(), err);
             }
