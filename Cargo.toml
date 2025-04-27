@@ -7,6 +7,7 @@ description = "Find frecen results in git repositories using regular expressions
 
 [dependencies]
 clap = { version = "4.5.37", features = ["derive"] }
+git2 = "0.20.1"
 grep = "0.3.2"
 ignore = "0.4.23"
 termcolor = "1.4.1"
