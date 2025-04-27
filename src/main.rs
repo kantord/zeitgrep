@@ -1,11 +1,12 @@
+use std::collections::HashMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use clap::Parser;
-use git2::{BlameOptions, Repository};
-use grep::matcher::Matcher;
+use git2::{Blame, BlameOptions, Repository};
 use grep::{
+    matcher::Matcher,
     regex::RegexMatcher,
     searcher::{BinaryDetection, MmapChoice, SearcherBuilder, sinks::UTF8},
 };
@@ -31,40 +32,69 @@ struct MatchResult {
     path: PathBuf,
     line_number: u64,
     line_text: String,
-    frecency_score: bool,
+    frecency_score: i32,
 }
 
 impl MatchResult {
-    fn calculate_frecency(&mut self) -> Result<(), git2::Error> {
-        let repo = Repository::open(".")?;
-        let mut opts = BlameOptions::new();
+    fn calculate_frecency<'repo>(
+        &mut self,
+        repo: &'repo Repository,
+        blame_cache: &mut HashMap<PathBuf, Blame<'repo>>,
+        commit_count_cache: &mut HashMap<PathBuf, i32>,
+    ) -> Result<(), git2::Error> {
+        let path = self
+            .path
+            .strip_prefix("./")
+            .unwrap_or(&self.path)
+            .to_path_buf();
 
-        // Convert the path to a clean relative path
-        let path = self.path.strip_prefix("./").unwrap_or(&self.path);
+        // Get blame for the file (from cache or fresh)
+        let blame = blame_cache.entry(path.clone()).or_insert_with(|| {
+            repo.blame_file(&path, Some(&mut BlameOptions::new()))
+                .expect("Failed to blame file")
+        });
 
-        // Get blame information for the file
-        let blame = repo.blame_file(path, Some(&mut opts))?;
-
-        // Count how many different commits touched this line
         let line_idx = (self.line_number - 1) as usize;
         let hunk = blame.get_line(line_idx);
 
-        // If we found blame info for this line, check if it was modified multiple times
-        if let Some(_hunk) = hunk {
-            // For now, we'll consider a line "frecent" if it has been modified at all
-            self.frecency_score = true;
-        } else {
-            self.frecency_score = false;
-        }
+        // Line bonus
+        let line_bonus = match hunk {
+            Some(h) => {
+                if h.final_commit_id().is_zero() {
+                    5 // uncommitted line
+                } else {
+                    2 // committed line
+                }
+            }
+            None => 0, // fallback
+        };
 
+        // Commit count for the file (from cache or computed)
+        let file_score = *commit_count_cache.entry(path.clone()).or_insert_with(|| {
+            let mut revwalk = repo.revwalk().expect("Couldn't create revwalk");
+            revwalk.push_head().expect("Couldn't push HEAD");
+
+            let mut count = 0;
+            for oid_result in revwalk {
+                if let Ok(oid) = oid_result {
+                    if let Ok(commit) = repo.find_commit(oid) {
+                        if commit.parents().len() > 1 {
+                            continue; // Skip merge commits for simplicity
+                        }
+                        if let Some(tree) = commit.tree().ok() {
+                            if tree.get_path(&path).is_ok() {
+                                count += 1;
+                            }
+                        }
+                    }
+                }
+            }
+            count
+        });
+
+        self.frecency_score = file_score + line_bonus;
         Ok(())
     }
-}
-
-fn sort_matches(mut matches: Vec<MatchResult>) -> Vec<MatchResult> {
-    // Sort with true (frecent) matches first
-    matches.sort_by_key(|m| !m.frecency_score);
-    matches
 }
 
 fn find_matches(pattern: &str) -> Vec<MatchResult> {
@@ -99,17 +129,12 @@ fn find_matches(pattern: &str) -> Vec<MatchResult> {
                     &matcher,
                     path,
                     UTF8(move |lnum, line| {
-                        let mut match_result = MatchResult {
+                        let match_result = MatchResult {
                             path: path.to_path_buf(),
                             line_number: lnum,
                             line_text: line.to_string(),
-                            frecency_score: false,
+                            frecency_score: 0, // to be calculated later
                         };
-
-                        // Calculate frecency score for this match
-                        if let Err(e) = match_result.calculate_frecency() {
-                            eprintln!("Error calculating frecency: {}", e);
-                        }
 
                         let mut matches = matches.lock().unwrap();
                         matches.push(match_result);
@@ -130,6 +155,23 @@ fn find_matches(pattern: &str) -> Vec<MatchResult> {
     matches
 }
 
+fn calculate_frecencies(matches: &mut [MatchResult]) -> Result<(), git2::Error> {
+    let repo = Repository::open(".")?;
+    let mut blame_cache = HashMap::new();
+    let mut commit_count_cache = HashMap::new();
+
+    for m in matches {
+        m.calculate_frecency(&repo, &mut blame_cache, &mut commit_count_cache)?;
+    }
+
+    Ok(())
+}
+
+fn sort_matches(mut matches: Vec<MatchResult>) -> Vec<MatchResult> {
+    matches.sort_by_key(|m| -m.frecency_score);
+    matches
+}
+
 fn print_matches(matches: Vec<MatchResult>, pattern: &str, show_score: bool) {
     let matcher = RegexMatcher::new(pattern).expect("Invalid regular expression");
     let mut stdout = StandardStream::stdout(ColorChoice::Auto);
@@ -144,14 +186,8 @@ fn print_matches(matches: Vec<MatchResult>, pattern: &str, show_score: bool) {
             let start = matched.start();
             let end = matched.end();
 
-            // Print score if flag is enabled
             if show_score {
-                write!(
-                    &mut stdout,
-                    "{}: ",
-                    if m.frecency_score { "1.00" } else { "0.00" }
-                )
-                .unwrap();
+                write!(&mut stdout, "{:.2}: ", m.frecency_score as f32).unwrap();
             }
 
             write!(&mut stdout, "{}:{}:", m.path.display(), m.line_number).unwrap();
@@ -176,7 +212,12 @@ fn print_matches(matches: Vec<MatchResult>, pattern: &str, show_score: bool) {
 
 fn main() {
     let args = Args::parse();
-    let matches = find_matches(&args.pattern);
+    let mut matches = find_matches(&args.pattern);
+
+    if let Err(e) = calculate_frecencies(&mut matches) {
+        eprintln!("Error calculating frecency: {}", e);
+    }
+
     let sorted_matches = sort_matches(matches);
     print_matches(sorted_matches, &args.pattern, args.score);
 }
