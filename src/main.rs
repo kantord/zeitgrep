@@ -38,17 +38,17 @@ impl MatchResult {
     fn calculate_frecency(&mut self) -> Result<(), git2::Error> {
         let repo = Repository::open(".")?;
         let mut opts = BlameOptions::new();
-        
+
         // Convert the path to a clean relative path
         let path = self.path.strip_prefix("./").unwrap_or(&self.path);
-        
+
         // Get blame information for the file
         let blame = repo.blame_file(path, Some(&mut opts))?;
-        
+
         // Count how many different commits touched this line
         let line_idx = (self.line_number - 1) as usize;
         let hunk = blame.get_line(line_idx);
-        
+
         // If we found blame info for this line, check if it was modified multiple times
         if let Some(_hunk) = hunk {
             // For now, we'll consider a line "frecent" if it has been modified at all
@@ -105,12 +105,12 @@ fn find_matches(pattern: &str) -> Vec<MatchResult> {
                             line_text: line.to_string(),
                             frecency_score: false,
                         };
-                        
+
                         // Calculate frecency score for this match
                         if let Err(e) = match_result.calculate_frecency() {
                             eprintln!("Error calculating frecency: {}", e);
                         }
-                        
+
                         let mut matches = matches.lock().unwrap();
                         matches.push(match_result);
                         Ok(true)
@@ -146,9 +146,14 @@ fn print_matches(matches: Vec<MatchResult>, pattern: &str, show_score: bool) {
 
             // Print score if flag is enabled
             if show_score {
-                write!(&mut stdout, "{}: ", if m.frecency_score { "1.00" } else { "0.00" }).unwrap();
+                write!(
+                    &mut stdout,
+                    "{}: ",
+                    if m.frecency_score { "1.00" } else { "0.00" }
+                )
+                .unwrap();
             }
-            
+
             write!(&mut stdout, "{}:{}:", m.path.display(), m.line_number).unwrap();
 
             stdout.set_color(&normal).unwrap();
@@ -175,4 +180,3 @@ fn main() {
     let sorted_matches = sort_matches(matches);
     print_matches(sorted_matches, &args.pattern, args.score);
 }
-
