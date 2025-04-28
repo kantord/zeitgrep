@@ -1,10 +1,10 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use clap::Parser;
-use git2::{Blame, BlameOptions, Oid, Repository};
+use git2::{BlameOptions, Repository};
 use grep::{
     matcher::Matcher,
     regex::RegexMatcher,
@@ -46,96 +46,7 @@ fn current_timestamp() -> i64 {
 
 /// Estimate number of lines from blob size
 fn estimate_line_count(blob_size: usize) -> usize {
-    (blob_size / 50).max(1) // assume ~50 bytes/line
-}
-
-impl MatchResult {
-    fn calculate_frecency<'repo>(
-        &mut self,
-        repo: &'repo Repository,
-        blame_cache: &mut HashMap<PathBuf, Blame<'repo>>,
-        commit_score_cache: &mut HashMap<PathBuf, f32>,
-        blob_line_cache: &mut HashMap<Oid, usize>,
-    ) -> Result<(), git2::Error> {
-        let path = self
-            .path
-            .strip_prefix("./")
-            .unwrap_or(&self.path)
-            .to_path_buf();
-        let now = current_timestamp();
-
-        // Get blame for the file
-        let blame = blame_cache.entry(path.clone()).or_insert_with(|| {
-            repo.blame_file(&path, Some(&mut BlameOptions::new()))
-                .expect("Failed to blame file")
-        });
-
-        let line_idx = (self.line_number - 1) as usize;
-        let hunk = blame.get_line(line_idx);
-
-        // Line bonus based on current file size
-        let line_bonus = match hunk {
-            Some(h) => {
-                let lines = match std::fs::read_to_string(&self.path) {
-                    Ok(content) => content.lines().count().max(1),
-                    Err(_) => 1,
-                };
-
-                if h.final_commit_id().is_zero() {
-                    5.0 / (lines as f32)
-                } else {
-                    2.0 / (lines as f32)
-                }
-            }
-            None => 0.0,
-        };
-
-        // File-level commit history score
-        let file_score = *commit_score_cache.entry(path.clone()).or_insert_with(|| {
-            let mut revwalk = repo.revwalk().expect("Couldn't create revwalk");
-
-            // Restrict revwalk to commits touching HEAD
-            revwalk.push_head().expect("Couldn't push HEAD");
-            let _ = revwalk.simplify_first_parent();
-
-            let mut score = 0.0;
-
-            for oid_result in revwalk {
-                if let Ok(oid) = oid_result {
-                    if let Ok(commit) = repo.find_commit(oid) {
-                        if commit.parents().len() > 1 {
-                            continue; // Skip merges
-                        }
-                        if let Ok(tree) = commit.tree() {
-                            if tree.get_path(&path).is_ok() {
-                                let entry = tree.get_path(&path).unwrap();
-                                let blob_id = entry.id();
-
-                                let line_count =
-                                    *blob_line_cache.entry(blob_id).or_insert_with(|| {
-                                        if let Ok(blob) = repo.find_blob(blob_id) {
-                                            estimate_line_count(blob.size())
-                                        } else {
-                                            1
-                                        }
-                                    });
-
-                                let commit_time = commit.time().seconds();
-                                let age_seconds = (now - commit_time).max(1);
-                                let age_days = (age_seconds as f32) / (60.0 * 60.0 * 24.0);
-
-                                score += 1.0 / (line_count as f32 * age_days);
-                            }
-                        }
-                    }
-                }
-            }
-            score
-        });
-
-        self.frecency_score = file_score + line_bonus;
-        Ok(())
-    }
+    (blob_size / 50).max(1) // Assume ~50 bytes per line
 }
 
 fn find_matches(pattern: &str) -> Vec<MatchResult> {
@@ -198,17 +109,82 @@ fn find_matches(pattern: &str) -> Vec<MatchResult> {
 
 fn calculate_frecencies(matches: &mut [MatchResult]) -> Result<(), git2::Error> {
     let repo = Repository::open(".")?;
+    let now = current_timestamp();
+
+    let mut paths_of_interest = HashSet::new();
+    for m in matches.iter() {
+        paths_of_interest.insert(m.path.clone());
+    }
+
     let mut blame_cache = HashMap::new();
-    let mut commit_score_cache = HashMap::new();
+    for path in paths_of_interest.iter() {
+        if let Ok(blame) = repo.blame_file(path, Some(&mut BlameOptions::new())) {
+            blame_cache.insert(path.clone(), blame);
+        }
+    }
+
+    let mut file_scores: HashMap<PathBuf, f32> =
+        paths_of_interest.iter().map(|p| (p.clone(), 0.0)).collect();
+
     let mut blob_line_cache = HashMap::new();
 
-    for m in matches {
-        m.calculate_frecency(
-            &repo,
-            &mut blame_cache,
-            &mut commit_score_cache,
-            &mut blob_line_cache,
-        )?;
+    let mut revwalk = repo.revwalk()?;
+    revwalk.push_head()?;
+    let _ = revwalk.simplify_first_parent();
+
+    for oid_result in revwalk {
+        if let Ok(oid) = oid_result {
+            if let Ok(commit) = repo.find_commit(oid) {
+                if commit.parents().len() > 1 {
+                    continue; // Skip merge commits
+                }
+                if let Ok(tree) = commit.tree() {
+                    for path in paths_of_interest.iter() {
+                        if let Ok(entry) = tree.get_path(path) {
+                            let blob_id = entry.id();
+
+                            let line_count = *blob_line_cache.entry(blob_id).or_insert_with(|| {
+                                if let Ok(blob) = repo.find_blob(blob_id) {
+                                    estimate_line_count(blob.size())
+                                } else {
+                                    1
+                                }
+                            });
+
+                            let commit_time = commit.time().seconds();
+                            let age_seconds = (now - commit_time).max(1);
+                            let age_days = (age_seconds as f32) / (60.0 * 60.0 * 24.0);
+
+                            let contribution = 1.0 / (line_count as f32 * age_days);
+                            *file_scores.get_mut(path).unwrap() += contribution;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    for m in matches.iter_mut() {
+        let blame = blame_cache.get(&m.path);
+        let line_idx = (m.line_number - 1) as usize;
+        let hunk = blame.and_then(|b| b.get_line(line_idx));
+
+        let lines = match std::fs::read_to_string(&m.path) {
+            Ok(content) => content.lines().count().max(1),
+            Err(_) => 1,
+        };
+
+        let line_bonus = if let Some(h) = hunk {
+            if h.final_commit_id().is_zero() {
+                5.0 / (lines as f32)
+            } else {
+                2.0 / (lines as f32)
+            }
+        } else {
+            0.0
+        };
+
+        m.frecency_score = file_scores.get(&m.path).copied().unwrap_or(0.0) + line_bonus;
     }
 
     Ok(())
