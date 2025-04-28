@@ -44,6 +44,11 @@ fn current_timestamp() -> i64 {
         .as_secs() as i64
 }
 
+/// Estimate number of lines from blob size
+fn estimate_line_count(blob_size: usize) -> usize {
+    (blob_size / 50).max(1) // assume ~50 bytes/line
+}
+
 impl MatchResult {
     fn calculate_frecency<'repo>(
         &mut self,
@@ -68,7 +73,7 @@ impl MatchResult {
         let line_idx = (self.line_number - 1) as usize;
         let hunk = blame.get_line(line_idx);
 
-        // Line bonus based on file's current line count
+        // Line bonus based on current file size
         let line_bonus = match hunk {
             Some(h) => {
                 let lines = match std::fs::read_to_string(&self.path) {
@@ -88,9 +93,13 @@ impl MatchResult {
         // File-level commit history score
         let file_score = *commit_score_cache.entry(path.clone()).or_insert_with(|| {
             let mut revwalk = repo.revwalk().expect("Couldn't create revwalk");
+
+            // Restrict revwalk to commits touching HEAD
             revwalk.push_head().expect("Couldn't push HEAD");
+            let _ = revwalk.simplify_first_parent();
 
             let mut score = 0.0;
+
             for oid_result in revwalk {
                 if let Ok(oid) = oid_result {
                     if let Ok(commit) = repo.find_commit(oid) {
@@ -98,25 +107,21 @@ impl MatchResult {
                             continue; // Skip merges
                         }
                         if let Ok(tree) = commit.tree() {
-                            if let Ok(entry) = tree.get_path(&path) {
+                            if tree.get_path(&path).is_ok() {
+                                let entry = tree.get_path(&path).unwrap();
                                 let blob_id = entry.id();
 
                                 let line_count =
                                     *blob_line_cache.entry(blob_id).or_insert_with(|| {
                                         if let Ok(blob) = repo.find_blob(blob_id) {
-                                            if let Ok(content) = std::str::from_utf8(blob.content())
-                                            {
-                                                content.lines().count().max(1)
-                                            } else {
-                                                1
-                                            }
+                                            estimate_line_count(blob.size())
                                         } else {
                                             1
                                         }
                                     });
 
                                 let commit_time = commit.time().seconds();
-                                let age_seconds = (now - commit_time).max(1); // avoid negative or 0
+                                let age_seconds = (now - commit_time).max(1);
                                 let age_days = (age_seconds as f32) / (60.0 * 60.0 * 24.0);
 
                                 score += 1.0 / (line_count as f32 * age_days);
@@ -263,3 +268,4 @@ fn main() {
     let sorted_matches = sort_matches(matches);
     print_matches(sorted_matches, &args.pattern, args.score);
 }
+
