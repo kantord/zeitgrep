@@ -22,6 +22,6 @@ cargo install zeitgrep
 ## 🚀 Usage
 
 ```bash
-zeitgrep {regular expression}
+zg {regular expression}
 ```
 
