@@ -15,13 +15,13 @@ score generate by [frecenfile](https://github.com/kantord/frecenfile). It uses [
 ## 📦 Installation
 
 ```bash
-cargo install frecentgrep
+cargo install zeitgrep
 ```
 
 
 ## 🚀 Usage
 
 ```bash
-frecentgrep {regular expression}
+zeitgrep {regular expression}
 ```
 
