@@ -4,7 +4,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use clap::Parser;
-use git2::Repository;
+use frecenfile::analyze_repo;
+use git2::Error as GitError;
 use grep::{
     matcher::Matcher,
     regex::RegexMatcher,
@@ -26,7 +27,7 @@ struct Args {
     score: bool,
 }
 
-/// Structure representing a single match found.
+/// A single line‑match.
 #[derive(Debug, Clone)]
 struct MatchResult {
     path: PathBuf,
@@ -35,29 +36,12 @@ struct MatchResult {
     frecency_score: f32,
 }
 
-/// Get the current timestamp in seconds since epoch
-fn current_timestamp() -> i64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("Time went backwards")
-        .as_secs() as i64
-}
-
-/// Estimate number of lines from blob size
-fn estimate_line_count(blob_size: usize) -> usize {
-    (blob_size / 50).max(1) // Assume ~50 bytes per line
-}
-
-/// Remove a leading "./" component if present
+/// Remove a leading “./” component if present (cosmetic).
 fn normalize_repo_path(path: &Path) -> &Path {
-    if let Ok(stripped) = path.strip_prefix(".") {
-        stripped
-    } else {
-        path
-    }
+    path.strip_prefix(".").unwrap_or(path)
 }
 
+/// Run ripgrep‑style search over the working tree.
 fn find_matches(pattern: &str) -> Vec<MatchResult> {
     let matcher = RegexMatcher::new(pattern).expect("Invalid regular expression");
     let root = Path::new(".");
@@ -65,20 +49,22 @@ fn find_matches(pattern: &str) -> Vec<MatchResult> {
 
     WalkBuilder::new(root).build_parallel().run(|| {
         let matcher = matcher.clone();
-        let matches = matches.clone();
+        let matches_outer = matches.clone();
 
         Box::new(move |result| {
             let entry = match result {
-                Ok(entry) => entry,
+                Ok(e) => e,
                 Err(err) => {
-                    eprintln!("Walk error: {}", err);
+                    eprintln!("Walk error: {err}");
                     return ignore::WalkState::Continue;
                 }
             };
 
             if entry.file_type().map(|ft| ft.is_file()).unwrap_or(false) {
-                let file_path = entry.into_path();
-                let matches = matches.clone();
+                let path_for_search = entry.path().to_path_buf();
+                let path_for_vec = entry.path().to_path_buf();
+
+                let matches_inner = matches_outer.clone();
 
                 let mut searcher = SearcherBuilder::new()
                     .line_number(true)
@@ -86,22 +72,17 @@ fn find_matches(pattern: &str) -> Vec<MatchResult> {
                     .binary_detection(BinaryDetection::quit(b'\0'))
                     .build();
 
-                let path_for_search = file_path.as_path();
-                let path_in_closure = file_path.clone();
-
                 let _ = searcher.search_path(
                     &matcher,
-                    path_for_search,
+                    &path_for_search,
                     UTF8(move |lnum, line| {
-                        let match_result = MatchResult {
-                            path: path_in_closure.clone(),
+                        let mut vec_guard = matches_inner.lock().unwrap();
+                        vec_guard.push(MatchResult {
+                            path: path_for_vec.clone(),
                             line_number: lnum,
                             line_text: line.to_string(),
                             frecency_score: 0.0,
-                        };
-
-                        let mut matches = matches.lock().unwrap();
-                        matches.push(match_result);
+                        });
                         Ok(true)
                     }),
                 );
@@ -117,84 +98,32 @@ fn find_matches(pattern: &str) -> Vec<MatchResult> {
         .expect("Mutex poisoned")
 }
 
-fn calculate_frecencies(matches: &mut [MatchResult]) -> Result<(), git2::Error> {
-    let repo = Repository::open(".")?;
-    let workdir = repo.workdir().unwrap_or(Path::new("."));
-    let now = current_timestamp();
-
-    let mut paths_of_interest: HashSet<PathBuf> = HashSet::new();
-    for m in matches.iter() {
-        let rel = if m.path.is_absolute() {
-            m.path.strip_prefix(workdir).unwrap_or(&m.path)
-        } else {
-            m.path.as_path()
-        };
-        paths_of_interest.insert(normalize_repo_path(rel).to_path_buf());
-    }
+/// Annotate each match with a frecency score from `frecenfile`.
+/// Files not returned by the library receive score 0.0.
+fn calculate_frecencies(matches: &mut [MatchResult]) -> Result<(), GitError> {
+    let paths_of_interest: HashSet<PathBuf> = matches
+        .iter()
+        .map(|m| normalize_repo_path(&m.path).to_path_buf())
+        .collect();
 
     if paths_of_interest.is_empty() {
-        return Err(git2::Error::from_str("no paths inside repository detected"));
+        return Ok(());
     }
 
-    let mut file_scores: HashMap<PathBuf, f32> =
-        paths_of_interest.iter().map(|p| (p.clone(), 0.0)).collect();
+    let scores_vec = analyze_repo(Path::new("."), Some(paths_of_interest.clone()), Some(3000))?;
 
-    let mut blob_line_cache = HashMap::new();
+    let score_map: HashMap<PathBuf, f32> =
+        scores_vec.into_iter().map(|(p, s)| (p, s as f32)).collect();
 
-    let mut revwalk = repo.revwalk()?;
-    revwalk.push_head()?;
-    let _ = revwalk.simplify_first_parent();
-
-    let mut any_contrib = false;
-
-    for oid in revwalk {
-        let oid = oid?;
-        let commit = repo.find_commit(oid)?;
-        if commit.parents().len() > 1 {
-            continue; // Skip merge commits
-        }
-        let tree = commit.tree()?;
-
-        for path in &paths_of_interest {
-            if let Ok(entry) = tree.get_path(path) {
-                let blob_id = entry.id();
-                let line_count = *blob_line_cache.entry(blob_id).or_insert_with(|| {
-                    repo.find_blob(blob_id)
-                        .map(|b| estimate_line_count(b.size()))
-                        .unwrap_or(1)
-                });
-
-                let commit_time = commit.time().seconds();
-                let age_seconds = (now - commit_time).max(1);
-                let age_days = age_seconds as f32 / 86_400.0;
-                let contribution = 1.0 / (line_count as f32 * age_days);
-                if contribution > 0.0 {
-                    any_contrib = true;
-                }
-                *file_scores.get_mut(path).unwrap() += contribution;
-            }
-        }
-    }
-
-    if !any_contrib {
-        return Err(git2::Error::from_str(
-            "no frecency contributions were accumulated (path handling still off)",
-        ));
-    }
-
-    for m in matches {
-        let rel = if m.path.is_absolute() {
-            m.path.strip_prefix(workdir).unwrap_or(&m.path)
-        } else {
-            m.path.as_path()
-        };
-        let rel = normalize_repo_path(rel);
-        m.frecency_score = *file_scores.get(rel).unwrap_or(&0.0);
+    for m in matches.iter_mut() {
+        let rel = normalize_repo_path(&m.path);
+        m.frecency_score = *score_map.get(rel).unwrap_or(&0.0);
     }
 
     Ok(())
 }
 
+/// Sort highest‑score first (ties keep original order).
 fn sort_matches(mut matches: Vec<MatchResult>) -> Vec<MatchResult> {
     matches.sort_by(|a, b| {
         b.frecency_score
@@ -204,28 +133,26 @@ fn sort_matches(mut matches: Vec<MatchResult>) -> Vec<MatchResult> {
     matches
 }
 
+/// Pretty‑print results with optional score column.
 fn print_matches(matches: Vec<MatchResult>, pattern: &str, show_score: bool) {
     let matcher = RegexMatcher::new(pattern).expect("Invalid regular expression");
     let mut stdout = StandardStream::stdout(ColorChoice::Auto);
-    let mut normal = ColorSpec::new();
-    normal.set_fg(None);
 
+    let normal = ColorSpec::new();
     let mut highlight = ColorSpec::new();
     highlight.set_fg(Some(termcolor::Color::Red)).set_bold(true);
 
     for m in matches {
         if let Ok(Some(matched)) = matcher.find(m.line_text.as_bytes()) {
             let (start, end) = (matched.start(), matched.end());
-
-            let line_clean = m.line_text.trim_end_matches(&['\n', '\n'][..]);
+            let line_clean = m.line_text.trim_end_matches(&['\r', '\n'][..]);
             let bytes = line_clean.as_bytes();
 
             if show_score {
-                let display_score = m.frecency_score * 1e8; 
-                write!(&mut stdout, "{:.2}: ", display_score).unwrap();
+                write!(stdout, "{:.2}: ", m.frecency_score * 1e8).unwrap();
             }
 
-            write!(&mut stdout, "{}:{}:", m.path.display(), m.line_number).unwrap();
+            write!(stdout, "{}:{}:", m.path.display(), m.line_number).unwrap();
 
             stdout.set_color(&normal).unwrap();
             stdout.write_all(&bytes[..start]).unwrap();
@@ -235,25 +162,19 @@ fn print_matches(matches: Vec<MatchResult>, pattern: &str, show_score: bool) {
 
             stdout.set_color(&normal).unwrap();
             stdout.write_all(&bytes[end..]).unwrap();
-            stdout
-                .write_all(
-                    b"
-",
-                )
-                .unwrap();
+            stdout.write_all(b"\n").unwrap();
         }
     }
 }
+
 fn main() {
     let args = Args::parse();
+
     let mut matches = find_matches(&args.pattern);
 
-    match calculate_frecencies(&mut matches) {
-        Ok(()) => {}
-        Err(e) => {
-            eprintln!("Error calculating frecency: {}", e);
-            std::process::exit(1);
-        }
+    if let Err(e) = calculate_frecencies(&mut matches) {
+        eprintln!("Error calculating frecency: {e}");
+        std::process::exit(1);
     }
 
     let sorted_matches = sort_matches(matches);
