@@ -235,10 +235,9 @@ mod tests {
 
     #[test]
     fn sorts_files_correctly_based_on_frecency() {
-        let repo_dir =
-            create_mock_repo(&[("alpha.rs", 5), ("beta.rs", 3), ("gamma.rs", 1)]);
+        let repo_dir = create_mock_repo(&[("alpha.rs", 5), ("beta.rs", 3), ("gamma.rs", 1)]);
 
-        let output = Command::cargo_bin(env!("CARGO_PKG_NAME"))
+        let output = Command::cargo_bin("zg")
             .unwrap()
             .current_dir(repo_dir.path())
             .arg("println!")
@@ -265,7 +264,7 @@ mod tests {
     #[test]
     fn placeholder_scores_match_stdout() {
         let dir = create_mock_repo(&[("alpha.rs", 5), ("beta.rs", 3), ("gamma.rs", 1)]);
-        let output = Command::cargo_bin(env!("CARGO_PKG_NAME"))
+        let output = Command::cargo_bin("zg")
             .unwrap()
             .current_dir(dir.path())
             .args(["println!", "--score"])
