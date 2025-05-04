@@ -25,6 +25,10 @@ struct Args {
     /// Show frecency scores in output
     #[arg(long)]
     score: bool,
+
+    /// Show column number of matches
+    #[arg(long)]
+    column: bool,
 }
 
 /// A single line‑match.
@@ -134,8 +138,8 @@ fn sort_matches(mut matches: Vec<MatchResult>) -> Vec<MatchResult> {
 }
 
 /// Pretty‑print results with optional score column.
-fn print_matches(matches: Vec<MatchResult>, pattern: &str, show_score: bool) {
-    let matcher = RegexMatcher::new(pattern).expect("Invalid regular expression");
+fn print_matches(matches: Vec<MatchResult>, args: Args) {
+    let matcher = RegexMatcher::new(&args.pattern).expect("Invalid regular expression");
     let mut stdout = StandardStream::stdout(ColorChoice::Auto);
 
     let normal = ColorSpec::new();
@@ -148,11 +152,15 @@ fn print_matches(matches: Vec<MatchResult>, pattern: &str, show_score: bool) {
             let line_clean = m.line_text.trim_end_matches(&['\r', '\n'][..]);
             let bytes = line_clean.as_bytes();
 
-            if show_score {
+            if args.score {
                 write!(stdout, "{:.2}: ", m.frecency_score * 1e8).unwrap();
             }
 
             write!(stdout, "{}:{}:", m.path.display(), m.line_number).unwrap();
+
+            if args.column {
+                write!(stdout, "{}:", start + 1).unwrap();
+            }
 
             stdout.set_color(&normal).unwrap();
             stdout.write_all(&bytes[..start]).unwrap();
@@ -178,7 +186,7 @@ fn main() {
     }
 
     let sorted_matches = sort_matches(matches);
-    print_matches(sorted_matches, &args.pattern, args.score);
+    print_matches(sorted_matches, args);
 }
 
 #[cfg(test)]
@@ -285,5 +293,58 @@ mod tests {
             let got: f32 = score_str.parse().unwrap();
             assert!((got - want).abs() < 1e-3, "{file}: got {got}, want {want}");
         }
+    }
+
+    #[test]
+    fn column_flag_outputs_correct_columns() {
+        let dir = create_mock_repo(&[("main.rs", 1), ("lib.rs", 1)]);
+
+        std::fs::write(
+            dir.path().join("main.rs"),
+            "fn main() {\n    println!(\"main\");\n}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("lib.rs"),
+            "fn lib() {\nprintln!(\"lib\");\n}\n",
+        )
+        .unwrap();
+
+        let output = Command::cargo_bin("zg")
+            .unwrap()
+            .current_dir(dir.path())
+            .args(["--column", "println!"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+
+        let stdout = String::from_utf8_lossy(&output);
+        let mut found_main = false;
+        let mut found_lib = false;
+
+        for line in stdout.lines() {
+            let mut parts = line.splitn(4, ':');
+            let file = parts.next().unwrap_or("");
+            let line_no = parts.next().unwrap_or("");
+            let col_no = parts.next().unwrap_or("");
+            let _rest = parts.next().unwrap_or("");
+
+            if !line_no.is_empty() && !col_no.is_empty() {
+                let col: usize = col_no.parse().expect("valid column number");
+
+                if file.contains("main.rs") {
+                    assert_eq!(col, 5, "wrong column number for main.rs");
+                    found_main = true;
+                } else if file.contains("lib.rs") {
+                    assert_eq!(col, 1, "wrong column number for lib.rs");
+                    found_lib = true;
+                }
+            }
+        }
+
+        assert!(found_main, "no output for main.rs");
+        assert!(found_lib, "no output for lib.rs");
     }
 }
