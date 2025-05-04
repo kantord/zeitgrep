@@ -181,3 +181,110 @@ fn main() {
     print_matches(sorted_matches, &args.pattern, args.score);
 }
 
+#[cfg(test)]
+mod tests {
+    use assert_cmd::Command;
+    use git2::Repository;
+    use std::{fs::File, io::Write, path::Path};
+    use tempfile::TempDir;
+
+    fn create_mock_repo(spec: &[(&str, usize)]) -> TempDir {
+        let dir = tempfile::tempdir().expect("tmp dir");
+        let repo = Repository::init(dir.path()).expect("init repo");
+        let sig = repo.signature().unwrap();
+
+        for (file_name, commit_count) in spec {
+            let file_path = dir.path().join(file_name);
+
+            for n in 0..*commit_count {
+                {
+                    let mut f = File::create(&file_path).unwrap();
+                    writeln!(f, "fn f_{n}() {{ println!(\"{file_name} #{n}\"); }}").unwrap();
+                }
+
+                let mut idx = repo.index().unwrap();
+                idx.add_path(Path::new(file_name)).unwrap();
+                idx.write().unwrap();
+                let tree_id = idx.write_tree().unwrap();
+                let tree = repo.find_tree(tree_id).unwrap();
+
+                let parents = if let Ok(head) = repo.head() {
+                    if head.is_branch() {
+                        vec![repo.find_commit(head.target().unwrap()).unwrap()]
+                    } else {
+                        vec![]
+                    }
+                } else {
+                    vec![]
+                };
+
+                let parent_refs: Vec<&git2::Commit> = parents.iter().collect();
+                repo.commit(
+                    Some("HEAD"),
+                    &sig,
+                    &sig,
+                    &format!("commit {n} for {file_name}"),
+                    &tree,
+                    &parent_refs,
+                )
+                .unwrap();
+            }
+        }
+        dir
+    }
+
+    #[test]
+    fn sorts_files_correctly_based_on_frecency() {
+        let repo_dir =
+            create_mock_repo(&[("alpha.rs", 5), ("beta.rs", 3), ("gamma.rs", 1)]);
+
+        let output = Command::cargo_bin(env!("CARGO_PKG_NAME"))
+            .unwrap()
+            .current_dir(repo_dir.path())
+            .arg("println!")
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+
+        let stdout = String::from_utf8_lossy(&output);
+
+        let pos = |needle: &str| stdout.find(needle).expect(needle);
+
+        let p_alpha = pos("alpha.rs");
+        let p_beta = pos("beta.rs");
+        let p_gamma = pos("gamma.rs");
+
+        assert!(
+            p_alpha < p_beta && p_beta < p_gamma,
+            "order wrong:\n{stdout}"
+        );
+    }
+
+    #[test]
+    fn placeholder_scores_match_stdout() {
+        let dir = create_mock_repo(&[("alpha.rs", 5), ("beta.rs", 3), ("gamma.rs", 1)]);
+        let output = Command::cargo_bin(env!("CARGO_PKG_NAME"))
+            .unwrap()
+            .current_dir(dir.path())
+            .args(["println!", "--score"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        let stdout = String::from_utf8_lossy(&output);
+        let expected = [
+            ("alpha.rs", 500000000.0_f32),
+            ("beta.rs", 300000000.0_f32),
+            ("gamma.rs", 100000000.0_f32),
+        ];
+        for (file, want) in expected {
+            let line = stdout.lines().find(|l| l.contains(file)).expect(file);
+            let score_str = line.split(':').next().unwrap();
+            let got: f32 = score_str.parse().unwrap();
+            assert!((got - want).abs() < 1e-3, "{file}: got {got}, want {want}");
+        }
+    }
+}
