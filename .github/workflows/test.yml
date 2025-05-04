@@ -1,0 +1,33 @@
+name: Rust CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      # Set a dummy author for any ad‑hoc commits your tests create
+      - name: Configure Git identity for tests
+        run: |
+          git config --global user.name  "CI"
+          git config --global user.email "ci@example.com"
+
+      - name: Build
+        run: cargo build --verbose
+
+      - name: Test
+        run: cargo test --all-targets --verbose
