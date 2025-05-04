@@ -3,7 +3,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use frecenfile::analyze_repo;
 use git2::Error as GitError;
 use grep::{
@@ -29,6 +29,17 @@ struct Args {
     /// Show column number of matches
     #[arg(long)]
     column: bool,
+
+    /// Controls when to use color
+    #[arg(long, value_enum, default_value = "never")]
+    color: Color,
+}
+
+#[derive(Copy, Clone, Debug, ValueEnum, PartialEq)]
+enum Color {
+    Always,
+    Auto,
+    Never,
 }
 
 /// A single line‑match.
@@ -140,7 +151,12 @@ fn sort_matches(mut matches: Vec<MatchResult>) -> Vec<MatchResult> {
 /// Pretty‑print results with optional score column.
 fn print_matches(matches: Vec<MatchResult>, args: Args) {
     let matcher = RegexMatcher::new(&args.pattern).expect("Invalid regular expression");
-    let mut stdout = StandardStream::stdout(ColorChoice::Auto);
+    let color_choice = match args.color {
+        Color::Always => ColorChoice::Always,
+        Color::Never => ColorChoice::Never,
+        Color::Auto => ColorChoice::Auto,
+    };
+    let mut stdout = StandardStream::stdout(color_choice);
 
     let normal = ColorSpec::new();
     let mut highlight = ColorSpec::new();
@@ -346,5 +362,61 @@ mod tests {
 
         assert!(found_main, "no output for main.rs");
         assert!(found_lib, "no output for lib.rs");
+    }
+
+    #[test]
+    fn color_never_disables_colored_output() {
+        let dir = create_mock_repo(&[("main.rs", 1)]);
+        std::fs::write(
+            dir.path().join("main.rs"),
+            "fn main() {\n    println!(\"main\");\n}\n",
+        )
+        .unwrap();
+
+        let output = Command::cargo_bin("zg")
+            .unwrap()
+            .current_dir(dir.path())
+            .args(["println!", "--color=never"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+
+        let stdout = String::from_utf8_lossy(&output);
+
+        // ANSI escape sequences for color usually start with \x1b (ESC)
+        assert!(
+            !stdout.contains('\x1b'),
+            "Expected no ANSI escape codes in output, got:\n{stdout}"
+        );
+    }
+
+    #[test]
+    fn color_always_shows_color_output() {
+        let dir = create_mock_repo(&[("main.rs", 1)]);
+        std::fs::write(
+            dir.path().join("main.rs"),
+            "fn main() {\n    println!(\"main\");\n}\n",
+        )
+        .unwrap();
+
+        let output = Command::cargo_bin("zg")
+            .unwrap()
+            .current_dir(dir.path())
+            .args(["println!", "--color=always"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+
+        let stdout = String::from_utf8_lossy(&output);
+
+        // ANSI escape sequences for color usually start with \x1b (ESC)
+        assert!(
+            stdout.contains('\x1b'),
+            "Expected ANSI escape codes in output, none found"
+        );
     }
 }
