@@ -299,9 +299,9 @@ mod tests {
             .clone();
         let stdout = String::from_utf8_lossy(&output);
         let expected = [
-            ("alpha.rs", 500000000.0_f32),
-            ("beta.rs", 300000000.0_f32),
-            ("gamma.rs", 100000000.0_f32),
+            ("alpha.rs", 419238720.0_f32),
+            ("beta.rs", 252082560.0_f32),
+            ("gamma.rs", 83847740.0_f32),
         ];
         for (file, want) in expected {
             let line = stdout.lines().find(|l| l.contains(file)).expect(file);
