@@ -1,6 +1,6 @@
 [package]
 name = "zeitgrep"
-version = "0.5.0"
+version = "0.5.1"
 edition = "2024"
 license = "MIT"
 description = "Find frecent results in git repositories using regular expressions"
