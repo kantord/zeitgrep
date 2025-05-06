@@ -216,55 +216,9 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
+    mod test_utils;
     use assert_cmd::Command;
-    use git2::Repository;
-    use std::{fs::File, io::Write, path::Path};
-    use tempfile::TempDir;
-
-    fn create_mock_repo(spec: &[(&str, usize)]) -> TempDir {
-        let dir = tempfile::tempdir().expect("tmp dir");
-        let repo = Repository::init(dir.path()).expect("init repo");
-        let sig = repo.signature().unwrap();
-
-        for (file_name, commit_count) in spec {
-            let file_path = dir.path().join(file_name);
-
-            for n in 0..*commit_count {
-                {
-                    let mut f = File::create(&file_path).unwrap();
-                    writeln!(f, "fn f_{n}() {{ println!(\"{file_name} #{n}\"); }}").unwrap();
-                }
-
-                let mut idx = repo.index().unwrap();
-                idx.add_path(Path::new(file_name)).unwrap();
-                idx.write().unwrap();
-                let tree_id = idx.write_tree().unwrap();
-                let tree = repo.find_tree(tree_id).unwrap();
-
-                let parents = if let Ok(head) = repo.head() {
-                    if head.is_branch() {
-                        vec![repo.find_commit(head.target().unwrap()).unwrap()]
-                    } else {
-                        vec![]
-                    }
-                } else {
-                    vec![]
-                };
-
-                let parent_refs: Vec<&git2::Commit> = parents.iter().collect();
-                repo.commit(
-                    Some("HEAD"),
-                    &sig,
-                    &sig,
-                    &format!("commit {n} for {file_name}"),
-                    &tree,
-                    &parent_refs,
-                )
-                .unwrap();
-            }
-        }
-        dir
-    }
+    use test_utils::create_mock_repo;
 
     #[test]
     fn sorts_files_correctly_based_on_frecency() {
