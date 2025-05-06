@@ -217,24 +217,12 @@ fn main() {
 #[cfg(test)]
 mod tests {
     mod test_utils;
-    use assert_cmd::Command;
-    use test_utils::create_mock_repo;
+    use test_utils::{create_mock_repo, run_zg};
 
     #[test]
     fn sorts_files_correctly_based_on_frecency() {
         let repo_dir = create_mock_repo(&[("alpha.rs", 5), ("beta.rs", 3), ("gamma.rs", 1)]);
-
-        let output = Command::cargo_bin("zg")
-            .unwrap()
-            .current_dir(repo_dir.path())
-            .arg("println!")
-            .assert()
-            .success()
-            .get_output()
-            .stdout
-            .clone();
-
-        let stdout = String::from_utf8_lossy(&output);
+        let stdout = run_zg(&repo_dir, &["println!"]);
 
         let pos = |needle: &str| stdout.find(needle).expect(needle);
 
@@ -251,16 +239,8 @@ mod tests {
     #[test]
     fn placeholder_scores_match_stdout() {
         let dir = create_mock_repo(&[("alpha.rs", 5), ("beta.rs", 3), ("gamma.rs", 1)]);
-        let output = Command::cargo_bin("zg")
-            .unwrap()
-            .current_dir(dir.path())
-            .args(["println!", "--score"])
-            .assert()
-            .success()
-            .get_output()
-            .stdout
-            .clone();
-        let stdout = String::from_utf8_lossy(&output);
+        let stdout = run_zg(&dir, &["println!", "--score"]);
+
         let expected = [
             ("alpha.rs", 419238720.0_f32),
             ("beta.rs", 252082560.0_f32),
@@ -289,17 +269,7 @@ mod tests {
         )
         .unwrap();
 
-        let output = Command::cargo_bin("zg")
-            .unwrap()
-            .current_dir(dir.path())
-            .args(["--column", "println!"])
-            .assert()
-            .success()
-            .get_output()
-            .stdout
-            .clone();
-
-        let stdout = String::from_utf8_lossy(&output);
+        let stdout = run_zg(&dir, &["println!", "--column"]);
         let mut found_main = false;
         let mut found_lib = false;
 
@@ -335,18 +305,7 @@ mod tests {
             "fn main() {\n    println!(\"main\");\n}\n",
         )
         .unwrap();
-
-        let output = Command::cargo_bin("zg")
-            .unwrap()
-            .current_dir(dir.path())
-            .args(["println!", "--color=never"])
-            .assert()
-            .success()
-            .get_output()
-            .stdout
-            .clone();
-
-        let stdout = String::from_utf8_lossy(&output);
+        let stdout = run_zg(&dir, &["println!", "--color=never"]);
 
         // ANSI escape sequences for color usually start with \x1b (ESC)
         assert!(
@@ -363,18 +322,7 @@ mod tests {
             "fn main() {\n    println!(\"main\");\n}\n",
         )
         .unwrap();
-
-        let output = Command::cargo_bin("zg")
-            .unwrap()
-            .current_dir(dir.path())
-            .args(["println!", "--color=always"])
-            .assert()
-            .success()
-            .get_output()
-            .stdout
-            .clone();
-
-        let stdout = String::from_utf8_lossy(&output);
+        let stdout = run_zg(&dir, &["println!", "--color=always"]);
 
         // ANSI escape sequences for color usually start with \x1b (ESC)
         assert!(
@@ -389,16 +337,7 @@ mod tests {
         let file_path = dir.path().join("case.rs");
         std::fs::write(&file_path, "Hello\nhello\nHELLO\n").unwrap();
 
-        let output = Command::cargo_bin("zg")
-            .unwrap()
-            .current_dir(dir.path())
-            .arg("hello")
-            .assert()
-            .success()
-            .get_output()
-            .stdout
-            .clone();
-        let stdout = String::from_utf8_lossy(&output);
+        let stdout = run_zg(&dir, &["hello"]);
 
         assert!(
             stdout.contains("case.rs:2"),
@@ -421,16 +360,7 @@ mod tests {
         let file_path = dir.path().join("case.rs");
         std::fs::write(&file_path, "Hello\nhello\nHELLO\n").unwrap();
 
-        let output = Command::cargo_bin("zg")
-            .unwrap()
-            .current_dir(dir.path())
-            .args(&["-i", "hello"])
-            .assert()
-            .success()
-            .get_output()
-            .stdout
-            .clone();
-        let stdout = String::from_utf8_lossy(&output);
+        let stdout = run_zg(&dir, &["-i", "hello"]);
 
         assert!(stdout.contains("case.rs:1"), "Expected match for 'Hello'");
         assert!(stdout.contains("case.rs:2"), "Expected match for 'hello'");
@@ -443,16 +373,7 @@ mod tests {
         let file_path = dir.path().join("case.rs");
         std::fs::write(&file_path, "Hello\nhello\nHELLO\n").unwrap();
 
-        let output = Command::cargo_bin("zg")
-            .unwrap()
-            .current_dir(dir.path())
-            .args(&["--ignore-case", "hello"])
-            .assert()
-            .success()
-            .get_output()
-            .stdout
-            .clone();
-        let stdout = String::from_utf8_lossy(&output);
+        let stdout = run_zg(&dir, &["--ignore-case", "HelLo"]);
 
         assert!(stdout.contains("case.rs:1"), "Expected match for 'Hello'");
         assert!(stdout.contains("case.rs:2"), "Expected match for 'hello'");

@@ -1,3 +1,4 @@
+use assert_cmd::Command;
 use git2::Repository;
 use std::{fs::File, io::Write, path::Path};
 use tempfile::TempDir;
@@ -51,4 +52,15 @@ pub fn create_mock_repo(spec: &[(&str, usize)]) -> TempDir {
     }
 
     dir
+}
+
+pub fn run_zg(repo_dir: &TempDir, args: &[&str]) -> String {
+    let assert = Command::cargo_bin("zg")
+        .expect("binary `zg` not found")
+        .current_dir(repo_dir.path())
+        .args(args)
+        .assert()
+        .success();
+    let out = assert.get_output().stdout.clone();
+    String::from_utf8_lossy(&out).into_owned()
 }
