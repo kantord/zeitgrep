@@ -39,7 +39,7 @@ struct Args {
     column: bool,
 
     /// Controls when to use color
-    #[arg(long, value_enum, default_value = "never")]
+    #[arg(long, value_enum, default_value = "auto")]
     color: Color,
 }
 
