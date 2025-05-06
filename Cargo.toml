@@ -1,9 +1,10 @@
 [package]
 name = "zeitgrep"
-version = "0.5.1"
+version = "0.6.0"
 edition = "2024"
 license = "MIT"
 description = "Find frecent results in git repositories using regular expressions"
+repository = "https://github.com/kantord/zeitgrep"
 
 [[bin]]
 name = "zg"
