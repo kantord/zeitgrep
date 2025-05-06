@@ -22,6 +22,10 @@ struct Args {
     #[arg()]
     pattern: String,
 
+    /// Case-insensitive regex matching
+    #[arg(short = 'i', long = "ignore-case")]
+    ignore_case: bool,
+
     /// Show frecency scores in output
     #[arg(long)]
     score: bool,
@@ -149,8 +153,8 @@ fn sort_matches(mut matches: Vec<MatchResult>) -> Vec<MatchResult> {
 }
 
 /// Pretty‑print results with optional score column.
-fn print_matches(matches: Vec<MatchResult>, args: Args) {
-    let matcher = RegexMatcher::new(&args.pattern).expect("Invalid regular expression");
+fn print_matches(matches: Vec<MatchResult>, pattern: &str, args: Args) {
+    let matcher = RegexMatcher::new(pattern).expect("Invalid regular expression");
     let color_choice = match args.color {
         Color::Always => ColorChoice::Always,
         Color::Never => ColorChoice::Never,
@@ -193,8 +197,13 @@ fn print_matches(matches: Vec<MatchResult>, args: Args) {
 
 fn main() {
     let args = Args::parse();
+    let pattern_str = if args.ignore_case {
+        format!("(?i){}", args.pattern)
+    } else {
+        args.pattern.clone()
+    };
 
-    let mut matches = find_matches(&args.pattern);
+    let mut matches = find_matches(&pattern_str);
 
     if let Err(e) = calculate_frecencies(&mut matches) {
         eprintln!("Error calculating frecency: {e}");
@@ -202,7 +211,7 @@ fn main() {
     }
 
     let sorted_matches = sort_matches(matches);
-    print_matches(sorted_matches, args);
+    print_matches(sorted_matches, &pattern_str, args);
 }
 
 #[cfg(test)]
@@ -418,5 +427,81 @@ mod tests {
             stdout.contains('\x1b'),
             "Expected ANSI escape codes in output, none found"
         );
+    }
+
+    #[test]
+    fn default_search_is_case_sensitive() {
+        let dir = create_mock_repo(&[("case.rs", 1)]);
+        let file_path = dir.path().join("case.rs");
+        std::fs::write(&file_path, "Hello\nhello\nHELLO\n").unwrap();
+
+        let output = Command::cargo_bin("zg")
+            .unwrap()
+            .current_dir(dir.path())
+            .arg("hello")
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        let stdout = String::from_utf8_lossy(&output);
+
+        assert!(
+            stdout.contains("case.rs:2"),
+            "Expected match for lowercase 'hello', got:\n{}",
+            stdout
+        );
+        assert!(
+            !stdout.contains("case.rs:1"),
+            "Unexpected match for 'Hello'"
+        );
+        assert!(
+            !stdout.contains("case.rs:3"),
+            "Unexpected match for 'HELLO'"
+        );
+    }
+
+    #[test]
+    fn ignore_case_short_flag_matches_all_cases() {
+        let dir = create_mock_repo(&[("case.rs", 1)]);
+        let file_path = dir.path().join("case.rs");
+        std::fs::write(&file_path, "Hello\nhello\nHELLO\n").unwrap();
+
+        let output = Command::cargo_bin("zg")
+            .unwrap()
+            .current_dir(dir.path())
+            .args(&["-i", "hello"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        let stdout = String::from_utf8_lossy(&output);
+
+        assert!(stdout.contains("case.rs:1"), "Expected match for 'Hello'");
+        assert!(stdout.contains("case.rs:2"), "Expected match for 'hello'");
+        assert!(stdout.contains("case.rs:3"), "Expected match for 'HELLO'");
+    }
+
+    #[test]
+    fn ignore_case_long_flag_matches_all_cases() {
+        let dir = create_mock_repo(&[("case.rs", 1)]);
+        let file_path = dir.path().join("case.rs");
+        std::fs::write(&file_path, "Hello\nhello\nHELLO\n").unwrap();
+
+        let output = Command::cargo_bin("zg")
+            .unwrap()
+            .current_dir(dir.path())
+            .args(&["--ignore-case", "hello"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        let stdout = String::from_utf8_lossy(&output);
+
+        assert!(stdout.contains("case.rs:1"), "Expected match for 'Hello'");
+        assert!(stdout.contains("case.rs:2"), "Expected match for 'hello'");
+        assert!(stdout.contains("case.rs:3"), "Expected match for 'HELLO'");
     }
 }
