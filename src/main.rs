@@ -26,6 +26,10 @@ struct Args {
     #[arg(short = 'i', long = "ignore-case")]
     ignore_case: bool,
 
+    /// Case-insensitive unless the pattern has an uppercase letter
+    #[arg(short = 'S', long = "smart-case")]
+    smart_case: bool,
+
     /// Show frecency scores in output
     #[arg(long)]
     score: bool,
@@ -197,7 +201,9 @@ fn print_matches(matches: Vec<MatchResult>, pattern: &str, args: Args) {
 
 fn main() {
     let args = Args::parse();
-    let pattern_str = if args.ignore_case {
+    let case_insensitive =
+        args.ignore_case || (args.smart_case && args.pattern.to_lowercase() == args.pattern);
+    let pattern_str = if case_insensitive {
         format!("(?i){}", args.pattern)
     } else {
         args.pattern.clone()
@@ -365,6 +371,38 @@ mod tests {
         assert!(stdout.contains("case.rs:1"), "Expected match for 'Hello'");
         assert!(stdout.contains("case.rs:2"), "Expected match for 'hello'");
         assert!(stdout.contains("case.rs:3"), "Expected match for 'HELLO'");
+    }
+
+    #[test]
+    fn smart_case_no_uppercase_letters() {
+        let dir = create_mock_repo(&[("case.rs", 1)]);
+        let file_path = dir.path().join("case.rs");
+        std::fs::write(&file_path, "Hello\nhello\nHELLO\n").unwrap();
+
+        let stdout = run_zg(&dir, &["-S", "hello"]);
+
+        assert!(stdout.contains("case.rs:1"), "Expected match for 'Hello'");
+        assert!(stdout.contains("case.rs:2"), "Expected match for 'hello'");
+        assert!(stdout.contains("case.rs:3"), "Expected match for 'HELLO'");
+    }
+
+    #[test]
+    fn smart_case_has_uppercase_letters() {
+        let dir = create_mock_repo(&[("case.rs", 1)]);
+        let file_path = dir.path().join("case.rs");
+        std::fs::write(&file_path, "Hello\nhello\nHELLO\n").unwrap();
+
+        let stdout = run_zg(&dir, &["--smart-case", "Hello"]);
+
+        assert!(stdout.contains("case.rs:1"), "Expected match for 'Hello'");
+        assert!(
+            !stdout.contains("case.rs:2"),
+            "Unexpected match for 'hello'"
+        );
+        assert!(
+            !stdout.contains("case.rs:3"),
+            "Unexpected match for 'HELLO'"
+        );
     }
 
     #[test]
