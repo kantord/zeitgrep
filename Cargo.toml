@@ -1,6 +1,6 @@
 [package]
 name = "zeitgrep"
-version = "0.7.1"
+version = "0.7.2"
 edition = "2024"
 license = "MIT"
 description = "Find frecent results in git repositories using regular expressions"
@@ -11,8 +11,9 @@ name = "zg"
 path = "src/main.rs"
 
 [dependencies]
+anyhow = "1.0.98"
 clap = { version = "4.5.37", features = ["derive"] }
-frecenfile = "0.3.0"
+frecenfile = "0.4.0"
 git2 = "0.20.1"
 grep = "0.3.2"
 ignore = "0.4.23"

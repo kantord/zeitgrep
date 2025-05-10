@@ -3,9 +3,9 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+use anyhow::{Error, Result};
 use clap::{Parser, ValueEnum};
 use frecenfile::analyze_repo;
-use git2::Error as GitError;
 use grep::{
     matcher::Matcher,
     regex::RegexMatcher,
@@ -123,7 +123,7 @@ fn find_matches(pattern: &str) -> Vec<MatchResult> {
 
 /// Annotate each match with a frecency score from `frecenfile`.
 /// Files not returned by the library receive score 0.0.
-fn calculate_frecencies(matches: &mut [MatchResult]) -> Result<(), GitError> {
+fn calculate_frecencies(matches: &mut [MatchResult]) -> Result<(), Error> {
     let paths_of_interest: HashSet<PathBuf> = matches
         .iter()
         .map(|m| normalize_repo_path(&m.path).to_path_buf())
@@ -199,7 +199,7 @@ fn print_matches(matches: Vec<MatchResult>, pattern: &str, args: Args) {
     }
 }
 
-fn main() {
+fn main() -> Result<()> {
     let args = Args::parse();
     let case_insensitive =
         args.ignore_case || (args.smart_case && args.pattern.to_lowercase() == args.pattern);
@@ -211,13 +211,12 @@ fn main() {
 
     let mut matches = find_matches(&pattern_str);
 
-    if let Err(e) = calculate_frecencies(&mut matches) {
-        eprintln!("Error calculating frecency: {e}");
-        std::process::exit(1);
-    }
+    calculate_frecencies(&mut matches)?;
 
     let sorted_matches = sort_matches(matches);
     print_matches(sorted_matches, &pattern_str, args);
+
+    Ok(())
 }
 
 #[cfg(test)]
