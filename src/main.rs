@@ -2,6 +2,8 @@ use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::io::ErrorKind;
+use std::io;
 
 use anyhow::{Error, Result};
 use clap::{Parser, ValueEnum};
@@ -156,8 +158,7 @@ fn sort_matches(mut matches: Vec<MatchResult>) -> Vec<MatchResult> {
     matches
 }
 
-/// Pretty‑print results with optional score column.
-fn print_matches(matches: Vec<MatchResult>, pattern: &str, args: Args) {
+fn print_matches(matches: Vec<MatchResult>, pattern: &str, args: Args) -> io::Result<()> {
     let matcher = RegexMatcher::new(pattern).expect("Invalid regular expression");
     let color_choice = match args.color {
         Color::Always => ColorChoice::Always,
@@ -173,34 +174,32 @@ fn print_matches(matches: Vec<MatchResult>, pattern: &str, args: Args) {
     for m in matches {
         if let Ok(Some(matched)) = matcher.find(m.line_text.as_bytes()) {
             let (start, end) = (matched.start(), matched.end());
-            let line_clean = m.line_text.trim_end_matches(&['\r', '\n'][..]);
-            let bytes = line_clean.as_bytes();
+            let line = m.line_text.trim_end_matches(&['\r', '\n'][..]).as_bytes();
 
             if args.score {
-                write!(stdout, "{:.2}: ", m.frecency_score * 1e8).unwrap();
+                write!(stdout, "{:.2}: ", m.frecency_score * 1e8)?;
             }
-
-            write!(stdout, "{}:{}:", m.path.display(), m.line_number).unwrap();
-
+            write!(stdout, "{}:{}:", m.path.display(), m.line_number)?;
             if args.column {
-                write!(stdout, "{}:", start + 1).unwrap();
+                write!(stdout, "{}:", start + 1)?;
             }
 
-            stdout.set_color(&normal).unwrap();
-            stdout.write_all(&bytes[..start]).unwrap();
-
-            stdout.set_color(&highlight).unwrap();
-            stdout.write_all(&bytes[start..end]).unwrap();
-
-            stdout.set_color(&normal).unwrap();
-            stdout.write_all(&bytes[end..]).unwrap();
-            stdout.write_all(b"\n").unwrap();
+            stdout.set_color(&normal)?;
+            stdout.write_all(&line[..start])?;
+            stdout.set_color(&highlight)?;
+            stdout.write_all(&line[start..end])?;
+            stdout.set_color(&normal)?;
+            stdout.write_all(&line[end..])?;
+            stdout.write_all(b"\n")?;
         }
     }
+
+    Ok(())
 }
 
 fn main() -> Result<()> {
     let args = Args::parse();
+
     let case_insensitive =
         args.ignore_case || (args.smart_case && args.pattern.to_lowercase() == args.pattern);
     let pattern_str = if case_insensitive {
@@ -210,11 +209,21 @@ fn main() -> Result<()> {
     };
 
     let mut matches = find_matches(&pattern_str);
-
     calculate_frecencies(&mut matches)?;
-
     let sorted_matches = sort_matches(matches);
-    print_matches(sorted_matches, &pattern_str, args);
+
+    match print_matches(sorted_matches, &pattern_str, args) {
+        Err(e) if e.kind() == ErrorKind::BrokenPipe => {
+            // downstream closed early (e.g. `head`) → silent exit
+            return Ok(());
+        }
+        Err(e) => {
+            // real I/O error
+            eprintln!("I/O error: {}", e);
+            std::process::exit(1);
+        }
+        Ok(()) => {}
+    }
 
     Ok(())
 }
