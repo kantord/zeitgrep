@@ -59,3 +59,21 @@ cargo install zeitgrep
 zg {regular expression}
 ```
 
+## 🧑‍🍳 Recipes
+
+### Live grep in Neovim using `telescope.nvim`
+
+To configure *[telescope.nvim](https://github.com/nvim-telescope/telescope.nvim)* to use `zeitgrep` for live grep, use the following:
+
+```lua
+require("telescope").setup {
+  defaults = {
+    vimgrep_arguments = {
+      "zg",
+      "--column",
+      "--color=never",
+    },
+  },
+}
+```
+
