@@ -1649,7 +1649,7 @@ dependencies = [
 
 [[package]]
 name = "zeitgrep"
-version = "0.7.3"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "assert_cmd",

@@ -77,3 +77,9 @@ require("telescope").setup {
 }
 ```
 
+### Find stale TODO
+
+```bash
+zg TODO --sort=asc
+```
+
