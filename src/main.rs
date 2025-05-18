@@ -1,9 +1,9 @@
 use std::collections::{HashMap, HashSet};
+use std::io;
+use std::io::ErrorKind;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::io::ErrorKind;
-use std::io;
 
 use anyhow::{Error, Result};
 use clap::{Parser, ValueEnum};
@@ -43,6 +43,10 @@ struct Args {
     /// Controls when to use color
     #[arg(long, value_enum, default_value = "auto")]
     color: Color,
+
+    /// Sorting order for frecency score ("asc" or "desc")
+    #[arg(long, value_enum, default_value = "desc")]
+    sort: SortOrder,
 }
 
 #[derive(Copy, Clone, Debug, ValueEnum, PartialEq)]
@@ -50,6 +54,12 @@ enum Color {
     Always,
     Auto,
     Never,
+}
+
+#[derive(Copy, Clone, Debug, ValueEnum, PartialEq)]
+enum SortOrder {
+    Asc,
+    Desc,
 }
 
 /// A single line‑match.
@@ -158,7 +168,7 @@ fn sort_matches(mut matches: Vec<MatchResult>) -> Vec<MatchResult> {
     matches
 }
 
-fn print_matches(matches: Vec<MatchResult>, pattern: &str, args: Args) -> io::Result<()> {
+fn print_matches(matches: Vec<MatchResult>, pattern: &str, args: &Args) -> io::Result<()> {
     let matcher = RegexMatcher::new(pattern).expect("Invalid regular expression");
     let color_choice = match args.color {
         Color::Always => ColorChoice::Always,
@@ -210,9 +220,13 @@ fn main() -> Result<()> {
 
     let mut matches = find_matches(&pattern_str);
     calculate_frecencies(&mut matches)?;
-    let sorted_matches = sort_matches(matches);
+    let mut sorted_matches = sort_matches(matches);
 
-    match print_matches(sorted_matches, &pattern_str, args) {
+    if args.sort == SortOrder::Asc {
+        sorted_matches.reverse();
+    }
+
+    match print_matches(sorted_matches, &pattern_str, &args) {
         Err(e) if e.kind() == ErrorKind::BrokenPipe => {
             // downstream closed early (e.g. `head`) → silent exit
             return Ok(());
@@ -247,6 +261,23 @@ mod tests {
         assert!(
             p_alpha < p_beta && p_beta < p_gamma,
             "order wrong:\n{stdout}"
+        );
+    }
+
+    #[test]
+    fn sorts_files_correctly_ascending() {
+        let repo_dir = create_mock_repo(&[("alpha.rs", 5), ("beta.rs", 3), ("gamma.rs", 1)]);
+        let stdout = run_zg(&repo_dir, &["println!", "--sort=asc"]);
+
+        let pos = |needle: &str| stdout.find(needle).expect(needle);
+
+        let p_gamma = pos("gamma.rs");
+        let p_beta = pos("beta.rs");
+        let p_alpha = pos("alpha.rs");
+
+        assert!(
+            p_gamma < p_beta && p_beta < p_alpha,
+            "ascending order wrong:\n{stdout}"
         );
     }
 
@@ -426,3 +457,4 @@ mod tests {
         assert!(stdout.contains("case.rs:3"), "Expected match for 'HELLO'");
     }
 }
+
