@@ -1,0 +1,22 @@
+# {{ title }}
+
+## Overview
+{{ description }}
+
+## Usage
+```bash
+{{ command }}
+```
+
+## Parameters
+{% for param in parameters %}
+- `{{ param.name }}`: {{ param.description }}
+{% endfor %}
+
+## Examples
+{% for example in examples %}
+### {{ example.title }}
+```bash
+{{ example.command }}
+```
+{% endfor %} 
