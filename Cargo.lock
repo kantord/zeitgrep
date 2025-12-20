@@ -407,9 +407,9 @@ dependencies = [
 
 [[package]]
 name = "frecenfile"
-version = "0.4.0"
+version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "29d5545a101a90b6de8178f69dbb55ac0c0376577e533f34c81a1ce697efadac"
+checksum = "8f25cb6d11105515e8ef7e7b09ebeb2db132a7e158bf000a563717f8836ddd82"
 dependencies = [
  "anyhow",
  "bincode",
