@@ -3,6 +3,7 @@ use std::io;
 use std::io::ErrorKind;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Error, Result};
@@ -39,6 +40,10 @@ struct Args {
     /// Show column number of matches
     #[arg(long)]
     column: bool,
+
+    /// Suppress output; exit 0 if any match is found, 1 otherwise
+    #[arg(short = 'q', long = "quiet")]
+    quiet: bool,
 
     /// Controls when to use color
     #[arg(long, value_enum, default_value = "auto")]
@@ -77,16 +82,24 @@ fn normalize_repo_path(path: &Path) -> &Path {
 }
 
 /// Run ripgrep‑style search over the working tree.
-fn find_matches(pattern: &str) -> Vec<MatchResult> {
+/// With `stop_at_first`, workers quit as soon as any thread has recorded a
+/// match (used by `--quiet`, where only the existence of a match matters).
+fn find_matches(pattern: &str, stop_at_first: bool) -> Vec<MatchResult> {
     let matcher = RegexMatcher::new(pattern).expect("Invalid regular expression");
     let root = Path::new(".");
     let matches = Arc::new(Mutex::new(Vec::<MatchResult>::new()));
+    let found = Arc::new(AtomicBool::new(false));
 
     WalkBuilder::new(root).build_parallel().run(|| {
         let matcher = matcher.clone();
         let matches_outer = matches.clone();
+        let found_outer = found.clone();
 
         Box::new(move |result| {
+            if found_outer.load(Ordering::Relaxed) {
+                return ignore::WalkState::Quit;
+            }
+
             let entry = match result {
                 Ok(e) => e,
                 Err(err) => {
@@ -100,6 +113,7 @@ fn find_matches(pattern: &str) -> Vec<MatchResult> {
                 let path_for_vec = entry.path().to_path_buf();
 
                 let matches_inner = matches_outer.clone();
+                let found_sink = found_outer.clone();
 
                 let mut searcher = SearcherBuilder::new()
                     .line_number(true)
@@ -118,6 +132,10 @@ fn find_matches(pattern: &str) -> Vec<MatchResult> {
                             line_text: line.to_string(),
                             frecency_score: 0.0,
                         });
+                        if stop_at_first {
+                            found_sink.store(true, Ordering::Relaxed);
+                            return Ok(false);
+                        }
                         Ok(true)
                     }),
                 );
@@ -218,7 +236,12 @@ fn main() -> Result<()> {
         args.pattern.clone()
     };
 
-    let mut matches = find_matches(&pattern_str);
+    let mut matches = find_matches(&pattern_str, args.quiet);
+
+    if args.quiet {
+        std::process::exit(if matches.is_empty() { 1 } else { 0 });
+    }
+
     calculate_frecencies(&mut matches)?;
     let mut sorted_matches = sort_matches(matches);
 
@@ -244,6 +267,8 @@ fn main() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use assert_cmd::Command;
+
     mod test_utils;
     use test_utils::{create_mock_repo, run_zg};
 
@@ -456,5 +481,38 @@ mod tests {
         assert!(stdout.contains("case.rs:2"), "Expected match for 'hello'");
         assert!(stdout.contains("case.rs:3"), "Expected match for 'HELLO'");
     }
-}
 
+    #[test]
+    fn quiet_suppresses_output_and_exits_zero_on_match() {
+        let dir = create_mock_repo(&[("alpha.rs", 1)]);
+        let assert = Command::cargo_bin("zg")
+            .expect("binary `zg` not found")
+            .current_dir(dir.path())
+            .args(["--quiet", "println!"])
+            .assert()
+            .success();
+
+        assert!(
+            assert.get_output().stdout.is_empty(),
+            "Expected no stdout in quiet mode, got: {:?}",
+            String::from_utf8_lossy(&assert.get_output().stdout)
+        );
+    }
+
+    #[test]
+    fn quiet_short_flag_exits_one_when_no_match() {
+        let dir = create_mock_repo(&[("alpha.rs", 1)]);
+        let assert = Command::cargo_bin("zg")
+            .expect("binary `zg` not found")
+            .current_dir(dir.path())
+            .args(["-q", "no_such_pattern_xyz"])
+            .assert()
+            .failure();
+
+        assert!(
+            assert.get_output().stdout.is_empty(),
+            "Expected no stdout in quiet mode, got: {:?}",
+            String::from_utf8_lossy(&assert.get_output().stdout)
+        );
+    }
+}
